@@ -1,0 +1,117 @@
+###############################################
+zabbix db
+###############################################
+container_name=zabbix_timescale_db
+ mkdir -p /storage/zabbix_timescale_db/data
+
+ docker run -d --name zabbix_timescale_db \
+ -p 5432:5432 \
+ --restart=unless-stopped \
+ --net lab-network --ip 172.20.0.13 \
+ -v /storage/zabbix_timescale_db/data:/var/lib/postgresql/data \
+ -e POSTGRES_PASSWORD=root \
+ timescale/timescaledb:2.8.0-pg13
+
+
+ docker exec -it zabbix_timescale_db bash
+ su - postgres
+ createuser --pwprompt zabbix # создается пользователь с вводом пароля
+ createdb -O zabbix -E Unicode -T template0 zabbix # создается БД
+
+ psql zabbix
+ GRANT ALL PRIVILEGES ON DATABASE zabbix to zabbix;
+
+ psql zabbix
+ CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+
+
+###############################################
+zabbix server
+###############################################
+container_name=zabbix_server
+mkdir -p /storage/zabbix_server/usr/lib/zabbix/{externalscripts,modules,,mibs,snmptraps,alertscripts}
+
+docker run -d --name zabbix_server \
+ -h zabbix_server \
+ --restart=unless-stopped \
+ --net lab-network --ip 172.20.0.2 \
+ -p 10051:10051 \
+ -e DB_SERVER_HOST=zabbix_timescale_db \
+ -e POSTGRES_DB="zabbix" \
+ -e POSTGRES_USER="zabbix" \
+ -e POSTGRES_PASSWORD=zabbix \
+ -e ZBX_SERVER_NAME=zabbix_server \
+ -e ZBX_STARTPOLLERS="15" \
+ -e ZBX_STARTPOLLERSUNREACHABLE="5" \
+ -e ZBX_STARTTRAPPERS="5" \
+ -e ZBX_STARTDISCOVERERS="1" \
+ -e ZBX_STARTHTTPPOLLERS="1" \
+ -e ZBX_STARTTIMERS="1" \
+ -e ZBX_STARTESCALATORS="1" \
+ -e ZBX_SENDERFREQUENCY="30" \
+ -e ZBX_CACHESIZE="16M" \
+ -e ZBX_CACHEUPDATEFREQUENCY="60" \
+ -e ZBX_STARTDBSYNCERS="4" \
+ -e ZBX_HISTORYCACHESIZE="16M" \
+ -e ZBX_HISTORYINDEXCACHESIZE="4M" \
+ -e ZBX_TRENDCACHESIZE="4M" \
+ -e ZBX_VALUECACHESIZE="8M" \
+ -e ZBX_TRAPPERIMEOUT="300" \
+ -e ZBX_STARTPROXYPOLLERS="1" \
+ -e ZBX_STARTDBSYNCERS="5" \
+ -e ZBX_TIMEOUT="10" \
+ -e TZ="Europe/Kyiv" \
+ -v /storage/zabbix_server/usr/lib/zabbix/externalscripts:/usr/lib/zabbix/externalscripts \
+ -v /storage/zabbix_server/var/lib/zabbix/modules:/var/lib/zabbix/modules \
+ -v /storage/zabbix_server/var/lib/zabbix/mibs:/var/lib/zabbix/mibs \
+ -v /storage/zabbix_server/var/lib/zabbix/snmptraps:/var/lib/zabbix/snmptraps \
+ -v /storage/zabbix_server/usr/lib/zabbix/alertscripts:/usr/lib/zabbix/alertscripts \
+ zabbix/zabbix-server-pgsql:alpine-6.0-latest
+
+
+ ************************************
+ chunk
+ ************************************
+ docker stop zabbix_server
+ docker exec -it zabbix_timescale_db
+ su - postgres
+ psql -d zabbix -c "SELECT create_hypertable('history', 'clock', chunk_time_interval => 86400, migrate_data => true);"
+ psql -d zabbix -c "SELECT create_hypertable('history_uint', 'clock', chunk_time_interval => 86400, migrate_data => true);"
+ psql -d zabbix -c "SELECT create_hypertable('history_log', 'clock', chunk_time_interval => 86400, migrate_data => true);"
+ psql -d zabbix -c "SELECT create_hypertable('history_text', 'clock', chunk_time_interval => 86400, migrate_data => true);"
+ psql -d zabbix -c "SELECT create_hypertable('history_str', 'clock', chunk_time_interval => 86400, migrate_data => true);"
+ psql -d zabbix -c "SELECT create_hypertable('trends', 'clock', chunk_time_interval => 2592000, migrate_data => true);"
+ psql -d zabbix -c "SELECT create_hypertable('trends_uint', 'clock', chunk_time_interval => 2592000, migrate_data => true);"
+ psql -d zabbix -c "UPDATE config SET db_extension='timescaledb',hk_history_global=1,hk_trends_global=1;"
+ psql -d zabbix -c "UPDATE config SET compression_status=1,compress_older='7d';"
+
+
+###############################################
+zabbix web
+###############################################
+ container_name=zabbix_web
+ docker run -d --name zabbix_web \
+ -h zabbix_web -p 80:8080 \
+ --net lab-network --ip 172.20.0.10\
+ -e DB_SERVER_HOST=zabbix_timescale_db \
+ -e POSTGRES_DB="zabbix" \
+ -e POSTGRES_USER="zabbix" \
+ -e POSTGRES_PASSWORD=zabbix \
+ --restart unless-stopped \
+ -e TZ="Europe/Kyiv" \
+ -e PHP_TZ="Europe/Kyiv" \
+ -e ZBX_SERVER_HOST=zabbix_server \
+ zabbix/zabbix-web-nginx-pgsql:alpine-6.0-latest
+
+###############################################
+zabbix agent
+###############################################
+docker run -d --name zabbix_agent  \
+ -h zabbix_agent \
+ --restart=unless-stopped \
+ --net lab-network --ip 172.20.0.11 \
+ -p 10050:10050 \
+ -e ZBX_SERVER_HOST=172.20.0.2 \
+ -e ZBX_UNSAFEUSERPARAMETERS=1 \
+ -e ZBX_USERPARAMETER=1 \
+zabbix/zabbix-agent:6.0-ubuntu-latest
