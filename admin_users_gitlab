@@ -1,0 +1,1 @@
+curl -s "http://192.168.12.235:180/api/graphql" --header "Authorization: Bearer glpat-ZcEbpsEsknYxVsP8zYQY"     --header "Content-Type: application/json" --request POST     --data "{\"query\": \"query  {users(admins: true) {nodes {username,}}}\"}"
